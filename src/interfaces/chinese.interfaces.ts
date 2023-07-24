@@ -1,11 +1,11 @@
-export interface EuropeanEndpoints {
+export interface ChineseEndpoints {
   session: string;
   login: string;
   redirect_uri: string;
   token: string;
 }
 
-export interface EUPOIInformation {
+export interface CNPOIInformation {
   phone: string;
   waypointID: number;
   lang: 1;
@@ -34,7 +34,7 @@ export enum historyCumulatedTypes {
   TODAY = 2,
 }
 
-export interface EUDriveHistory {
+export interface CNDriveHistory {
   period: historyCumulatedTypes;
   consumption: {
     total: number;
@@ -47,7 +47,7 @@ export interface EUDriveHistory {
   distance: number;
 }
 
-export interface EUDatedDriveHistory extends Omit<EUDriveHistory, 'period'> {
+export interface CNDatedDriveHistory extends Omit<CNDriveHistory, 'period'> {
   period: historyDrivingPeriod;
   rawDate: string;
   date: Date;

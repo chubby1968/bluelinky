@@ -24,19 +24,19 @@ import {
 
 import logger from '../logger';
 import { Vehicle } from './vehicle';
-import { EuropeanController } from '../controllers/european.controller';
+import { ChineseController } from '../controllers/chinese.controller';
 import { celciusToTempCode, tempCodeToCelsius, parseDate, addMinutes } from '../util';
 import { manageBluelinkyError, ManagedBluelinkyError } from '../tools/common.tools';
 import {
-  EUDatedDriveHistory,
-  EUDriveHistory,
-  EUPOIInformation,
+  CNDatedDriveHistory,
+  CNDriveHistory,
+  CNPOIInformation,
   historyDrivingPeriod,
-} from '../interfaces/european.interfaces';
+} from '../interfaces/chinese.interfaces';
 import got from 'got';
 
-export default class EuropeanVehicle extends Vehicle {
-  public region = REGIONS.EU;
+export default class ChineseVehicle extends Vehicle {
+  public region = REGIONS.CN;
   public serverRates: {
     max: number;
     current: number;
@@ -47,9 +47,9 @@ export default class EuropeanVehicle extends Vehicle {
     current: -1,
   };
 
-  constructor(public vehicleConfig: VehicleRegisterOptions, public controller: EuropeanController) {
+  constructor(public vehicleConfig: VehicleRegisterOptions, public controller: ChineseController) {
     super(vehicleConfig, controller);
-    logger.debug(`EU Vehicle ${this.vehicleConfig.id} created`);
+    logger.debug(`CN Vehicle ${this.vehicleConfig.id} created`);
   }
 
   /**
@@ -62,15 +62,15 @@ export default class EuropeanVehicle extends Vehicle {
     const http = await this.controller.getVehicleHttpService();
     try {
       const response = this.updateRates(
-        await http.post(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/control/temperature`, {
+        await http.post(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/control/engine`, {
           body: {
             action: 'start',
-            hvacType: 0,
+            hvacType: 1,
             options: {
               defrost: config.defrost,
               heating1: config.heatedFeatures ? 1 : 0,
             },
-            tempCode: celciusToTempCode(REGIONS.EU, config.temperature),
+            tempCode: celciusToTempCode(REGIONS.CN, config.temperature),
             unit: config.unit,
           },
         })
@@ -78,7 +78,7 @@ export default class EuropeanVehicle extends Vehicle {
       logger.info(`Climate started for vehicle ${this.vehicleConfig.id}`);
       return response.body;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.start');
+      throw manageBluelinkyError(err, 'ChinaVehicle.start');
     }
   }
 
@@ -86,7 +86,7 @@ export default class EuropeanVehicle extends Vehicle {
     const http = await this.controller.getVehicleHttpService();
     try {
       const response = this.updateRates(
-        await http.post(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/control/temperature`, {
+        await http.post(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/control/engine`, {
           body: {
             action: 'stop',
             hvacType: 0,
@@ -102,7 +102,7 @@ export default class EuropeanVehicle extends Vehicle {
       logger.info(`Climate stopped for vehicle ${this.vehicleConfig.id}`);
       return response.body;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.stop');
+      throw manageBluelinkyError(err, 'ChinaVehicle.stop');
     }
   }
 
@@ -123,7 +123,7 @@ export default class EuropeanVehicle extends Vehicle {
       }
       return 'Something went wrong!';
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.lock');
+      throw manageBluelinkyError(err, 'ChinaVehicle.lock');
     }
   }
 
@@ -146,7 +146,7 @@ export default class EuropeanVehicle extends Vehicle {
 
       return 'Something went wrong!';
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.unlock');
+      throw manageBluelinkyError(err, 'ChinaVehicle.unlock');
     }
   }
 
@@ -159,31 +159,32 @@ export default class EuropeanVehicle extends Vehicle {
     const http = await this.controller.getVehicleHttpService();
 
     try {
+      
       const cachedResponse = this.updateRates(
         await http.get(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/status/latest`)
       );
 
-      const fullStatus = cachedResponse.body.resMsg.vehicleStatusInfo;
+      const fullStatus = cachedResponse.body.resMsg.status;
 
       if (statusConfig.refresh) {
         const statusResponse = this.updateRates(
           await http.get(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/status`)
         );
-        fullStatus.vehicleStatus = statusResponse.body.resMsg;
+        fullStatus.vehicleStatus = statusResponse.body.resMsg.status;
 
         const locationResponse = this.updateRates(
           await http.get(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/location`)
         );
-        fullStatus.vehicleLocation = locationResponse.body.resMsg.gpsDetail;
+        fullStatus.vehicleLocation = locationResponse.body.resMsg.coord;
       }
 
       this._fullStatus = fullStatus;
       return this._fullStatus;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.fullStatus');
+      throw manageBluelinkyError(err, 'ChinaVehicle.fullStatus');
     }
   }
-
+  
   public async status(
     input: VehicleStatusOptions
   ): Promise<VehicleStatus | RawVehicleStatus | null> {
@@ -202,9 +203,7 @@ export default class EuropeanVehicle extends Vehicle {
       );
 
       // handles refreshing data
-      const vehicleStatus = statusConfig.refresh
-        ? response.body.resMsg
-        : response.body.resMsg.vehicleStatusInfo.vehicleStatus;
+      const vehicleStatus =response.body.resMsg.status;
 
       const parsedStatus: VehicleStatus = {
         chassis: {
@@ -266,7 +265,7 @@ export default class EuropeanVehicle extends Vehicle {
 
       return this._status;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.status');
+      throw manageBluelinkyError(err, 'ChinaVehicle.status');
     }
   }
 
@@ -276,10 +275,10 @@ export default class EuropeanVehicle extends Vehicle {
       const response = this.updateRates(
         await http.get(`/api/v2/spa/vehicles/${this.vehicleConfig.id}/status/latest`)
       );
-      this._odometer = response.body.resMsg.vehicleStatusInfo.odometer as VehicleOdometer;
+      this._odometer = response.body.resMsg.status.odometer as VehicleOdometer;
       return this._odometer;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.odometer');
+      throw manageBluelinkyError(err, 'ChinaVehicle.odometer');
     }
   }
 
@@ -304,7 +303,7 @@ export default class EuropeanVehicle extends Vehicle {
 
       return this._location;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.location');
+      throw manageBluelinkyError(err, 'ChinaVehicle.location');
     }
   }
 
@@ -327,7 +326,7 @@ export default class EuropeanVehicle extends Vehicle {
 
       throw 'Something went wrong!';
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.startCharge');
+      throw manageBluelinkyError(err, 'ChinaVehicle.startCharge');
     }
   }
 
@@ -350,7 +349,7 @@ export default class EuropeanVehicle extends Vehicle {
 
       throw 'Something went wrong!';
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.stopCharge');
+      throw manageBluelinkyError(err, 'ChinaVehicle.stopCharge');
     }
   }
 
@@ -399,7 +398,7 @@ export default class EuropeanVehicle extends Vehicle {
       }
       return;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.monthyReports');
+      throw manageBluelinkyError(err, 'ChinaVehicle.monthyReports');
     }
   }
 
@@ -492,14 +491,14 @@ export default class EuropeanVehicle extends Vehicle {
       }
       return;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.history');
+      throw manageBluelinkyError(err, 'ChinaVehicle.history');
     }
   }
 
   public async driveHistory(period: historyDrivingPeriod = historyDrivingPeriod.DAY): Promise<
     DeepPartial<{
-      cumulated: EUDriveHistory[];
-      history: EUDatedDriveHistory[];
+      cumulated: CNDriveHistory[];
+      history: CNDatedDriveHistory[];
     }>
   > {
     const http = await this.controller.getApiHttpService();
@@ -538,7 +537,7 @@ export default class EuropeanVehicle extends Vehicle {
         })),
       };
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.history');
+      throw manageBluelinkyError(err, 'ChinaVehicle.history');
     }
   }
 
@@ -561,7 +560,7 @@ export default class EuropeanVehicle extends Vehicle {
       }
       return;
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.getChargeTargets');
+      throw manageBluelinkyError(err, 'ChinaVehicle.getChargeTargets');
     }
   }
 
@@ -590,7 +589,7 @@ export default class EuropeanVehicle extends Vehicle {
         })
       );
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.setChargeTargets');
+      throw manageBluelinkyError(err, 'ChinaVehicle.setChargeTargets');
     }
   }
 
@@ -598,7 +597,7 @@ export default class EuropeanVehicle extends Vehicle {
    * Define a navigation route
    * @param poiInformations The list of POIs and waypoint to go through
    */
-  public async setNavigation(poiInformations: EUPOIInformation[]): Promise<void> {
+  public async setNavigation(poiInformations: CNPOIInformation[]): Promise<void> {
     const http = await this.controller.getVehicleHttpService();
     try {
       this.updateRates(
@@ -610,7 +609,7 @@ export default class EuropeanVehicle extends Vehicle {
         })
       );
     } catch (err) {
-      throw manageBluelinkyError(err, 'EuropeVehicle.setNavigation');
+      throw manageBluelinkyError(err, 'ChinaVehicle.setNavigation');
     }
   }
 

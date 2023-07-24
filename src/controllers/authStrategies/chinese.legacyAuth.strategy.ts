@@ -1,24 +1,23 @@
 import got from 'got';
 import { CookieJar } from 'tough-cookie';
-import { EULanguages, EuropeanBrandEnvironment } from '../../constants/europe';
-import { AuthStrategy, Code, initSession } from './authStrategy';
+import { ChineseBrandEnvironment } from '../../constants/china';
+import { AuthStrategy, Code, initSession } from './china.authStrategy';
 import Url from 'url';
 
-export class EuropeanLegacyAuthStrategy implements AuthStrategy {
+export class ChineseLegacyAuthStrategy implements AuthStrategy {
   constructor(
-    private readonly environment: EuropeanBrandEnvironment,
-    private readonly language: EULanguages
+    private readonly environment: ChineseBrandEnvironment,
   ) {}
 
   public get name(): string {
-    return 'EuropeanLegacyAuthStrategy';
+    return 'ChineseLegacyAuthStrategy';
   }
 
   async login(
     user: { username: string; password: string },
     options?: { cookieJar: CookieJar }
   ): Promise<{ code: Code; cookies: CookieJar }> {
-    const cookieJar = await initSession(this.environment, this.language, options?.cookieJar);
+    const cookieJar = await initSession(this.environment, options?.cookieJar);
     const { body, statusCode } = await got(this.environment.endpoints.login, {
       method: 'POST',
       json: true,
@@ -30,7 +29,7 @@ export class EuropeanLegacyAuthStrategy implements AuthStrategy {
     });
     if (!body.redirectUrl) {
       throw new Error(
-        `@EuropeanLegacyAuthStrategy.login: sign In didn't work, could not retrieve auth code. status: ${statusCode}, body: ${JSON.stringify(
+        `@ChineseLegacyAuthStrategy.login: sign In didn't work, could not retrieve auth code. status: ${statusCode}, body: ${JSON.stringify(
           body
         )}`
       );
@@ -38,7 +37,7 @@ export class EuropeanLegacyAuthStrategy implements AuthStrategy {
     const { code } = Url.parse(body.redirectUrl, true).query;
     if (!code) {
       throw new Error(
-        '@EuropeanLegacyAuthStrategy.login: AuthCode was not found, you probably need to migrate your account.'
+        '@ChineseLegacyAuthStrategy.login: AuthCode was not found, you probably need to migrate your account.'
       );
     }
     return {

@@ -31,7 +31,7 @@ const apiCalls = [
 
 let client: BlueLinky;
 let vehicle;
-const { username, password, pin } = config;
+const { username, password, pin, useInfo = false } = config;
 
 const onReadyHandler = <T extends Vehicle>(vehicles: T[]) => {
   vehicle = vehicles[0];
@@ -45,7 +45,7 @@ const askForRegionInput = () => {
         type: 'list',
         name: 'region',
         message: 'What Region are you in?',
-        choices: ['US', 'EU', 'CA'],
+        choices: ['CN','US', 'EU', 'CA'],
       },
       {
         type: 'list',
@@ -122,6 +122,7 @@ async function performCommand(command) {
         const status = await vehicle.status({
           refresh: false,
           parsed: true,
+          useInfo,
         });
         console.log('status : ' + JSON.stringify(status, null, 2));
         break;
@@ -129,27 +130,31 @@ async function performCommand(command) {
         const statusU = await vehicle.status({
           refresh: false,
           parsed: false,
+          useInfo,
         });
         console.log('status : ' + JSON.stringify(statusU, null, 2));
         break;
       case 'statusR':
         const statusR = await vehicle.status({
           refresh: true,
-          parsed: true
+          parsed: true,
+          useInfo,
         });
         console.log('status remote : ' + JSON.stringify(statusR, null, 2));
         break;
       case 'fullStatus':
         const fullStatus = await vehicle.fullStatus({
           refresh: false,
-          parsed: false
+          parsed: false,
+          useInfo,
         });
         console.log('full status cached : ' + JSON.stringify(fullStatus, null, 2));
         break;
       case 'fullStatusR':
         const fullStatusR = await vehicle.fullStatus({
           refresh: true,
-          parsed: false
+          parsed: false,
+          useInfo,
         });
         console.log('full status remote : ' + JSON.stringify(fullStatusR, null, 2));
         break;
@@ -157,7 +162,7 @@ async function performCommand(command) {
         const startRes = await vehicle.start({
           airCtrl: false,
           igniOnDuration: 10,
-          airTempvalue: 70,
+          airTempvalue: 24,
           defrost: false,
           heating1: false,
         });
