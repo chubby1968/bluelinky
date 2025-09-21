@@ -1,4 +1,3 @@
-
 import {
   getBrandEnvironment,
   EuropeanBrandEnvironment,
@@ -13,6 +12,8 @@ import EuropeanVehicle from '../vehicles/european.vehicle';
 import { SessionController } from './controller';
 import logger from '../logger';
 import { URLSearchParams } from 'url';
+
+//import { CookieJar } from 'tough-cookie';
 import { VehicleRegisterOptions } from '../interfaces/common.interfaces';
 import { asyncMap, manageBluelinkyError, uuidV4 } from '../tools/common.tools';
 import { StampMode } from '../constants/stamps';
@@ -39,7 +40,8 @@ const CONTENT_TYPE_JSON = 'application/json;charset=UTF-8';
 const CONTENT_TYPE_FORM = 'application/x-www-form-urlencoded';
 
 export class EuropeanController extends SessionController<EuropeBlueLinkyConfig> {
-  private language: string;
+  private _environment: EuropeanBrandEnvironment;
+
   // Brand-specific endpoints and credentials
   private LOGIN_FORM_HOST: string;
   private PUSH_TYPE: string;
@@ -61,13 +63,10 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     if (this.userConfig.brand === 'kia') {
       this.LOGIN_FORM_HOST = 'https://idpconnect-eu.kia.com';
       this.PUSH_TYPE = 'APNS';
-    } else if (this.userConfig.brand === 'hyundai') {
+    } else {
       this.LOGIN_FORM_HOST = 'https://eu-account.hyundai.com';
       this.PUSH_TYPE = 'GCM';
-    } else { // 'genesis'
-      this.LOGIN_FORM_HOST = 'https://accounts-eu.genesis.com';
-      this.PUSH_TYPE = 'GCM';
-    }
+    } 
     logger.debug('EU Controller created');
   }
 
@@ -114,6 +113,7 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
       this.session.deviceId = notificationReponse.body.resMsg.deviceId;
     }
     logger.debug('@EuropeController.login: Device registered');
+    return 'OK';
   }
 /*
   private async getSessionCookies(): Promise<Headers | Record<string, string>> {
@@ -129,7 +129,7 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
         'Content-Type': CONTENT_TYPE_JSON,
         'User-Agent': USER_AGENT_OK_HTTP,
       },
-      json: { language: this.userConfig.language,},
+      body: JSON.stringify({ language: this.userConfig.language,}),
     }).catch(() => { /* ignore errors */});
   }
 
@@ -162,9 +162,11 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
   }
 
   public async login(): Promise<string> {
-    const stamp = await this.environment.stamp();
-    await this.getDeviceId(stamp);
-//    const sessionCookies = await this.getSessionCookies();
+    //const stamp = await this.environment.stamp();
+    const username = this.userConfig.username !== undefined ? this.userConfig.username : '';
+    const password = this.userConfig.password !== undefined ? this.userConfig.password : '';
+    await this.getDeviceId();
+    //const sessionCookies = await this.getSessionCookies();
     await this.setSessionLanguage();
 
     if (this.userConfig.brand === 'kia') {
@@ -172,7 +174,7 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
       const refreshToken = this.userConfig.password;
       this.session.refreshToken = refreshToken;
       await this.refreshAccessToken();
-      return;
+      return 'OK';
     }
 
     // Hyundai or Genesis:
@@ -187,28 +189,26 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     }
 
     // Exchange authorization code for tokens
-    const tokenData = await this.exchangeAuthCodeForToken(authorizationCode, stamp);
+    const tokenData = await this.exchangeAuthCodeForToken(authorizationCode);
     // Ensure we have a refresh token. Hyundai’s first token response may not include one, so fetch if needed.
     let refreshToken = tokenData.refreshToken;
-    if (this.brand === 'hyundai') {
+    if (this.userConfig.brand === 'hyundai') {
       if (!refreshToken) {
-        refreshToken = await this.fetchRefreshToken(tokenData.accessToken, stamp);
+        refreshToken = await this.fetchRefreshToken();
       }
     } else {
       // For Genesis, if not provided, we reuse the auth code as refresh (rarely needed).
       if (!refreshToken) refreshToken = authorizationCode;
     }
-    const validUntil = new Date(Date.now() + tokenData.expiresIn * 1000);
-    this.session.deviceId = deviceId;
     this.session.accessToken = tokenData.accessToken;
     this.session.refreshToken = refreshToken!;
-    this.session.tokenExpiresAt = validUntil;
-    return;
+    this.session.tokenExpiresAt = Math.floor(Date.now() / 1000 + tokenData.expiresIn);
+    return 'OK';
   }
 
   private async getAuthCodeDirect(username: string, password: string): Promise<string> {
-    if (this.brand === 'hyundai') {
-      const url = `${this.USER_API_URL}signin`;
+    if (this.userConfig.brand === 'hyundai') {
+      const url = this.environment.endpoints.login;
       const resp = await got.post(url, {
         headers: { 'Content-Type': CONTENT_TYPE_JSON },
         body: JSON.stringify({ email: username, password: password }),
@@ -227,45 +227,41 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
 
   private async getAuthCodeViaForm(username: string, password: string): Promise<string | null> {
     // Step 1: Get integration info (contains serviceId and userId for the session)
-    const infoUrl = `${this.USER_API_URL}integrationinfo`;
+    const infoUrl = this.environment.endpoints.integration;
     const infoResp = await got.get(infoUrl, { 
       headers: { 'User-Agent': USER_AGENT_MOZILLA }, 
     });
-    const info = await infoResp.json();
+    const info = JSON.parse(infoResp.body);
     const serviceId = info.serviceId;
     const userId = info.userId;
 
     // Step 2: Construct the appropriate authorization URL for the brand’s login page
     let authPageUrl: string;
-    if (this.brand === 'hyundai') {
+    if (this.userConfig.brand === 'hyundai') {
       // Hyundai EU auth realm (Keycloak)
       authPageUrl = `${this.LOGIN_FORM_HOST}/auth/realms/euhyundaiidm/protocol/openid-connect/auth` + 
-                    `?client_id=${this.environment.cliendId}&scope=openid%20profile%20email%20phone&response_type=code&hkid_session_reset=true` + 
-                    `&redirect_uri=${encodeURIComponent('${this.environment.baseUrl}/api/v1/user/integration/redirect/login')}` + 
-                    `&ui_locales=${this.userConfig.language}&state=${serviceId}:${userId}`;
-    } else if (this.brand === 'genesis') {
-      // Genesis EU auth realm
-      authPageUrl = `${this.LOGIN_FORM_HOST}/auth/realms/eugenesisidm/protocol/openid-connect/auth` + 
-                    `?client_id=${this.environment.cliendId}&scope=openid%20profile%20email%20phone&response_type=code&hkid_session_reset=true` + 
+                    `?client_id=${this.environment.clientId}&scope=openid%20profile%20email%20phone&response_type=code&hkid_session_reset=true` + 
                     `&redirect_uri=${encodeURIComponent('${this.environment.baseUrl}/api/v1/user/integration/redirect/login')}` + 
                     `&ui_locales=${this.userConfig.language}&state=${serviceId}:${userId}`;
     } else {
       // Kia fallback (not typically used, since Kia doesn’t require auth code in this flow)
-      authPageUrl = `${this.LOGIN_FORM_HOST}/auth/api/v2/user/oauth2/authorize?response_type=code&client_id=${this.environment.cliendId}` + 
+      authPageUrl = `${this.LOGIN_FORM_HOST}/auth/api/v2/user/oauth2/authorize?response_type=code&client_id=${this.environment.clientId}` + 
                     `&redirect_uri=${encodeURIComponent(this.environment.endpoints.redirectUri)}&lang=${this.userConfig.language}&state=ccsp`;
     }
     const authPageResp = await got.get(authPageUrl, { headers: { 'User-Agent': USER_AGENT_MOZILLA }, followRedirect: false });
-    let location = authPageResp.headers.get('location');
+    let rawLocation = authPageResp.headers['location'];
+    let location: string = Array.isArray(rawLocation) ? rawLocation[0] : rawLocation ?? '';
     if (location && location.includes('connector_session_key')) {
       await got.get(location, { headers: { 'User-Agent': USER_AGENT_MOZILLA }, followRedirect: false });
-      location = authPageResp.headers.get('location');  // update if changed
+      rawLocation = authPageResp.headers['location'];
+      location = Array.isArray(rawLocation) ? rawLocation[0] : rawLocation ?? '';
     }
-    let loginPageHtml: string;
-    if (authPageResp.status === 200) {
-      loginPageHtml = await authPageResp.text();
+    let loginPageHtml;
+    if (authPageResp.statusCode === 200) {
+      loginPageHtml = await authPageResp.body;
     } else if (location) {
       const loginPageResp = await fetch(location, { headers: { 'User-Agent': USER_AGENT_MOZILLA } });
-      loginPageHtml = await loginPageResp.text();
+      loginPageHtml = await loginPageResp.body;
     } else {
       throw new Error('Could not retrieve login form page');
     }
@@ -289,14 +285,15 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     // Submit the login form
     const formResp = await got.post(formActionUrl, { 
       headers: { 'Content-Type': CONTENT_TYPE_FORM, 'User-Agent': USER_AGENT_MOZILLA }, 
-      body: formData, 
+      body: formData.toString(), 
       followRedirect: false
     });
-    if (formResp.status !== 302) {
+    if (formResp.statusCode !== 302) {
       // If credentials are wrong or other error (not redirected to code)
       return null;
     }
-    const nextLocation = formResp.headers.get('location');
+    rawLocation = authPageResp.headers['location'];
+    const nextLocation = Array.isArray(rawLocation) ? rawLocation[0] : rawLocation ?? '';
     if (!nextLocation) {
       return null;
     }
@@ -310,7 +307,8 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     } else {
       // Follow the redirect to capture the code from the final URL
       const finalResp = await got.get(nextLocation, { headers: { 'User-Agent': USER_AGENT_MOZILLA }, followRedirect: false });
-      const finalLocation = finalResp.headers.get('location') || finalResp.url;
+      rawLocation = finalResp.headers['location'];
+      const finalLocation = Array.isArray(rawLocation) ? rawLocation[0] : rawLocation ?? finalResp.url;
       if (finalLocation) {
         code = new URL(finalLocation).searchParams.get('code');
       }
@@ -320,7 +318,7 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
 
   private async exchangeAuthCodeForToken(authCode: string): Promise<{ accessToken: string, refreshToken?: string, expiresIn: number }> {
     // Hyundai and Genesis use the CCSP user API token endpoint with client credentials
-    const tokenUrl = `${this.USER_API_URL}oauth2/token`;
+    const tokenUrl = this.environment.endpoints.token;
     const headers = {
       'Authorization': this.environment.basicToken,  // Basic auth with client_id:secret
       'Stamp': await this.environment.stamp(),
@@ -335,7 +333,7 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
       redirect_uri: `${this.environment.baseUrl}/api/v1/user/oauth2/redirect`,
       code: authCode
     });
-    const resp = await got.post(tokenUrl, { headers, body });
+    const resp = await got.post(tokenUrl, { headers, body: body.toString(), });
     const data = JSON.parse(resp.body as string);
     if (!data.access_token) {
       throw new Error(`Token exchange failed: ${JSON.stringify(data)}`);
@@ -347,12 +345,12 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     return { accessToken, refreshToken, expiresIn };
   }
 
-  private async refreshAccessToken(): Promise<string> {
+  public async refreshAccessToken(): Promise<string> {
     // Kia (and Genesis, if using this path) use their IDP host for token exchange (with client_secret 'secret') 
     const tokenUrl = `${this.LOGIN_FORM_HOST}/auth/api/v2/user/oauth2/token`;
     const body = new URLSearchParams({
      grant_type: 'refresh_token',
-      refresh_token: this.session.refreshToken,
+      refresh_token: this.session.refreshToken ?? '',
       client_id: this.environment.clientId,
       client_secret: 'secret'
     });
@@ -371,18 +369,17 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     this.session.accessToken = accessToken;
     this.session.refreshToken = newRefreshToken;
     const expiresIn = data.expires_in || 0;
-    const validUntil = new Date(Date.now() + expiresIn * 1000);
-    this.session.tokenExpiresAt = validUntil;
-    return;
+    this.session.tokenExpiresAt = Math.floor(Date.now() / 1000 + expiresIn);
+    return 'OK';
   }
 
   private async fetchRefreshToken( ): Promise<string> {
-    const url = `${this.USER_API_URL}oauth2/token`;
+    const url = this.environment.endpoints.token;
     const headers = {
       'Authorization': this.environment.basicToken,
       'Stamp': await this.environment.stamp(),
       'Content-Type': CONTENT_TYPE_FORM,
-      'Host': his.environment.baseUrl,
+      'Host': this.environment.baseUrl,
       'Connection': 'close',
       'Accept-Encoding': 'gzip, deflate',
       'User-Agent': USER_AGENT_OK_HTTP
@@ -391,9 +388,9 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
     const body = new URLSearchParams({
       grant_type: 'refresh_token',
       redirect_uri: 'https://www.getpostman.com/oauth2/callback',
-      refresh_token: this.session.accessToken
+      refresh_token: this.session.accessToken ?? ''
     });
-    const resp = await got.post(url, { headers, body });
+    const resp = await got.post(url, { headers, body: body.toString(), });
     const data = JSON.parse(resp.body as string);
     if (!data.access_token) {
       throw new Error(`Refresh token fetch failed: ${JSON.stringify(data)}`);
