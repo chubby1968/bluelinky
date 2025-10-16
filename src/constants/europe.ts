@@ -141,7 +141,7 @@ const getKiaEnvironment = ({
 
 export const getBrandEnvironment = ({
   brand,
-  stampMode = StampMode.DISTANT,
+  stampMode = StampMode.LOCAL,
   stampsFile,
 }: BrandEnvironmentConfig): EuropeanBrandEnvironment => {
   switch (brand) {
