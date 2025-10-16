@@ -69,7 +69,7 @@ EU has specific Bluelinky options :
 - `stampMode`: *Advanced* The kind of stamping mechanism to use (`LOCAL` | `DISTANT`). `DISTANT` by default. :warning: though `LOCAL` seems to work properly, it's in beta for now.
 - `stampFile`: *Advanced* The `DISTANT` stamp source to use. `https://raw.githubusercontent.com/neoPix/bluelinky-stamps/master/${brand}-${appId}.v2.json` by default.
 
-The password for BlueLinky should be derived from executing the python scripts KiaFetchApiRTokens.py or HyundaiFetchApiTokens.py
+The password for BlueLinky should be set to the "Refresh Token" derived from executing the python script KiaFetchApiRTokens.py or HyundaiFetchApiTokens.py
 
 
 ### Custom Stamps
