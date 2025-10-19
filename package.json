@@ -19,7 +19,7 @@
     "au:export:cfb": "cross-env LOG_LEVEL=debug ts-node ./scripts/export_au_cfb.ts",
     "test-ca": "npm run build && node test-ca.js",
     "watch": "tsc -w",
-    "prepack": "tsc"
+    "prepare": "tsc"
   },
   "author": "Hacksore",
   "license": "MIT",
