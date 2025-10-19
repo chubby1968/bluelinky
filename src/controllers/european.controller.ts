@@ -160,30 +160,73 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
       if (!this.userConfig.password || !this.userConfig.username) {
         throw new Error('@EuropeController.login: username and password must be defined.');
       }
-      let authResult: { code: Code; cookies: CookieJar } | null = null;
-      try {
-        logger.debug(
-          `@EuropeController.login: Trying to sign in with ${this.authStrategies.main.name}`
-        );
-        authResult = await this.authStrategies.main.login({
-          password: this.userConfig.password,
-          username: this.userConfig.username,
-        });
-      } catch (e) {
-        logger.error(
-          `@EuropeController.login: sign in with ${
-            this.authStrategies.main.name
-          } failed with error ${(e as Stringifiable).toString()}`
-        );
-        logger.debug(
-          `@EuropeController.login: Trying to sign in with ${this.authStrategies.fallback.name}`
-        );
-        authResult = await this.authStrategies.fallback.login({
-          password: this.userConfig.password,
-          username: this.userConfig.username,
-        });
+
+      // For KIA/HYUNDAI: allow password to be a pre-obtained refresh token.
+      // https://github.com/Hyundai-Kia-Connect/hyundai_kia_connect_api/issues/919#issuecomment-3414887155
+
+      // Try the token endpoint first (refresh token as password).
+      // Fall back to username/password.
+      let sessionAcquired = false;
+      if (this.environment.brand === 'kia' || this.environment.brand === 'hyundai') {
+        try {
+          const tokenFormData = new URLSearchParams();
+          tokenFormData.append('grant_type', 'refresh_token');
+          tokenFormData.append('redirect_uri', 'https://www.getpostman.com/oauth2/callback');
+          tokenFormData.append('refresh_token', this.userConfig.password);
+
+          const tokenResponse = await got(this.environment.endpoints.token, {
+            method: 'POST',
+            headers: {
+              Authorization: this.environment.basicToken,
+              Stamp: await this.environment.stamp(),
+              Host: this.environment.host,
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'User-Agent': 'okhttp/3.10.0',
+            },
+            body: tokenFormData.toString(),
+            throwHttpErrors: false,
+          });
+
+          if (tokenResponse.statusCode === 200) {
+            const tokenBody = JSON.parse(tokenResponse.body);
+            this.session.accessToken = `${tokenBody.token_type} ${tokenBody.access_token}`;
+            this.session.refreshToken = `${tokenBody.token_type} ${tokenBody.access_token}`;
+            this.session.tokenExpiresAt = Math.floor(Date.now() / 1000 + (tokenBody.expires_in || 0));
+            logger.debug('@EuropeController.login: Session defined properly (provided SPA refresh-token)');
+            sessionAcquired = true;
+          }
+
+          logger.debug(`@EuropeController.login: provided-refresh-token exchange failed: ${tokenResponse.statusCode} ${tokenResponse.body}`);
+        } catch (e) {
+          logger.debug(`@EuropeController.login: provided-refresh-token attempt threw: ${(e as Error).toString()}`);
+        }
       }
-      logger.debug('@EuropeController.login: Authenticated properly with user and password');
+
+      // Fallback: try legacy username/password login
+      let authResult: { code: Code; cookies: CookieJar } | null = null;
+      if (!sessionAcquired) {
+        try {
+          logger.debug(
+            `@EuropeController.login: Trying to sign in with ${this.authStrategies.main.name}`
+          );
+          authResult = await this.authStrategies.main.login({
+            password: this.userConfig.password,
+            username: this.userConfig.username,
+          });
+        } catch (e) {
+          logger.error(
+            `@EuropeController.login: sign in with ${this.authStrategies.main.name} failed with error ${(e as Stringifiable).toString()}`
+          );
+          logger.debug(
+            `@EuropeController.login: Trying to sign in with ${this.authStrategies.fallback.name}`
+          );
+          authResult = await this.authStrategies.fallback.login({
+            password: this.userConfig.password,
+            username: this.userConfig.username,
+          });
+        }
+        logger.debug('@EuropeController.login: Authenticated properly with user and password');
+      }
       const genRanHex = size =>
         [...Array(size)].map(() => Math.floor(Math.random() * 16).toString(16)).join('');
       const notificationReponse = await got(
@@ -214,40 +257,42 @@ export class EuropeanController extends SessionController<EuropeBlueLinkyConfig>
       }
       logger.debug('@EuropeController.login: Device registered');
 
-      // Updated token exchange to use new endpoint based on Python fix
-      const tokenUrl = this.environment.brand === 'kia' 
-        ? 'https://idpconnect-eu.kia.com/auth/api/v2/user/oauth2/token'
-        : 'https://idpconnect-eu.hyundai.com/auth/api/v2/user/oauth2/token';
+      if (authResult !== null) {
+        // Updated token exchange to use new endpoint based on Python fix
+        const tokenUrl = this.environment.brand === 'kia'
+          ? 'https://idpconnect-eu.kia.com/auth/api/v2/user/oauth2/token'
+          : 'https://idpconnect-eu.hyundai.com/auth/api/v2/user/oauth2/token';
 
-      const tokenFormData = new URLSearchParams();
-      tokenFormData.append('grant_type', 'authorization_code');
-      tokenFormData.append('code', authResult.code);
-      tokenFormData.append('redirect_uri', `${this.environment.baseUrl}/api/v1/user/oauth2/redirect`);
-      tokenFormData.append('client_id', this.environment.clientId);
-      tokenFormData.append('client_secret', 'secret');
+        const tokenFormData = new URLSearchParams();
+        tokenFormData.append('grant_type', 'authorization_code');
+        tokenFormData.append('code', authResult.code);
+        tokenFormData.append('redirect_uri', `${this.environment.baseUrl}/api/v1/user/oauth2/redirect`);
+        tokenFormData.append('client_id', this.environment.clientId);
+        tokenFormData.append('client_secret', 'secret');
 
-      const response = await got(tokenUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'okhttp/3.10.0',
-        },
-        body: tokenFormData.toString(),
-        cookieJar: authResult.cookies,
-        throwHttpErrors: false,
-      });
+        const response = await got(tokenUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'okhttp/3.10.0',
+          },
+          body: tokenFormData.toString(),
+          cookieJar: authResult.cookies,
+          throwHttpErrors: false,
+        });
 
-      if (response.statusCode !== 200) {
-        throw new Error(`@EuropeController.login: Could not manage to get token: ${response.body}`);
+        if (response.statusCode !== 200) {
+          throw new Error(`@EuropeController.login: Could not manage to get token: ${response.body}`);
+        }
+
+        if (response) {
+          const responseBody = JSON.parse(response.body);
+          this.session.accessToken = `Bearer ${responseBody.access_token}`;
+          this.session.refreshToken = responseBody.refresh_token;
+          this.session.tokenExpiresAt = Math.floor(Date.now() / 1000 + responseBody.expires_in);
+        }
+        logger.debug('@EuropeController.login: Session defined properly');
       }
-
-      if (response) {
-        const responseBody = JSON.parse(response.body);
-        this.session.accessToken = `Bearer ${responseBody.access_token}`;
-        this.session.refreshToken = responseBody.refresh_token;
-        this.session.tokenExpiresAt = Math.floor(Date.now() / 1000 + responseBody.expires_in);
-      }
-      logger.debug('@EuropeController.login: Session defined properly');
 
       return 'Login success';
     } catch (err) {

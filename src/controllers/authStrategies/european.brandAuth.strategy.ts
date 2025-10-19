@@ -13,7 +13,7 @@ export class EuropeanBrandAuthStrategy implements AuthStrategy {
   constructor(
     private readonly environment: EuropeanBrandEnvironment,
     private readonly language: EULanguages
-  ) {}
+  ) { }
 
   public get name(): string {
     return 'EuropeanBrandAuthStrategy';
@@ -39,6 +39,10 @@ export class EuropeanBrandAuthStrategy implements AuthStrategy {
 
     // Extract connector_session_key from the final URL after redirects
     const urlToCheck = authResponse.url;
+
+    if (urlToCheck.includes('captcha=1')) {
+      throw new Error(`@EuropeanBrandAuthStrategy.login: interactive challenge required (captcha). URL: ${urlToCheck}`);
+    }
 
     // Try multiple regex patterns to find the session key
     let connectorSessionKey: string | null = null;
