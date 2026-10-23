@@ -1,6 +1,6 @@
 import got from 'got';
 import { CookieJar } from 'tough-cookie';
-import { constants, createPublicKey, publicEncrypt } from 'crypto';
+import { constants, createHmac, createPublicKey, publicEncrypt, randomBytes } from 'crypto';
 import { URLSearchParams } from 'url';
 import { EULanguages, EuropeanBrandEnvironment } from '../../constants/europe';
 import { uuidV4 } from '../../tools/common.tools';
@@ -20,6 +20,12 @@ import logger from '../../logger';
 const CCI_CLIENT_VERSION = '1.3.3';
 const MOBILE_USER_AGENT =
   'Mozilla/5.0 (Linux; Android 4.1.1; Galaxy Nexus Build/JRO03C) AppleWebKit/535.19 (KHTML, like Gecko) Chrome/18.0.1025.166 Mobile Safari/535.19_CCS_APP_AOS';
+
+// Android OneApp build identity the X-Fingerprint is validated against (see evcc cci.go)
+const FP_CLIENT_VERSION = '1.4.0';
+const FP_OS_VERSION = '14';
+const FP_DEVICE_MODEL = 'SM-S918B';
+const FP_USER_AGENT = 'okhttp/4.12.0';
 
 const CCS_EXPIRY_FALLBACK = 60 * 60; // seconds, used when expiresTime is missing or implausible
 const CCS_EXPIRY_MAX_VALIDITY = 24 * 60 * 60; // seconds, upper bound of a plausible expiry
@@ -149,9 +155,10 @@ export class EuropeanCCIAuthStrategy {
 
     // 4. auth code → CCI token set
     const deviceId = uuidV4();
-    const tokenResponse = await this.post<CCITokenResponse>(
-      `/domain/api/v1/auth/token?code=${encodeURIComponent(code)}`,
-      this.headers(deviceId)
+    const query = `?code=${encodeURIComponent(code)}`;
+    const tokenResponse = await this.cciPost<CCITokenResponse>(
+      { path: `/auth/v1/token${query}`, headers: this.fpHeaders(deviceId) },
+      { path: `/domain/api/v1/auth/token${query}`, headers: this.headers(deviceId) }
     );
     const bundle = applyTokenResponse(emptyBundle(deviceId), tokenResponse);
 
@@ -160,40 +167,57 @@ export class EuropeanCCIAuthStrategy {
   }
 
   public async refresh(bundle: CCIBundle): Promise<CCIBundle> {
-    const tokenResponse = await this.post<CCITokenResponse>(
-      '/domain/api/v2/auth/token-refresh',
+    const body = JSON.stringify({
+      accessToken: bundle.cciAccessToken,
+      refreshToken: bundle.refreshToken,
+      exchangeableAccessToken: bundle.exchangeableToken,
+      exchangeableRefreshToken: bundle.exchangeableRefreshToken,
+      nonCcsToken: bundle.nonCcsToken,
+      nonCcsRefreshToken: bundle.nonCcsRefreshToken,
+      idToken: bundle.idToken,
+    });
+    const tokenResponse = await this.cciPost<CCITokenResponse>(
       {
-        ...this.headers(
-          bundle.deviceId,
-          bundle.cciAccessToken,
-          bundle.nonCcsToken,
-          bundle.exchangeableToken
-        ),
-        'Content-Type': 'application/json',
+        path: '/auth/v2/token-refresh',
+        headers: { ...this.fpHeaders(bundle.deviceId, body), 'Content-Type': 'application/json' },
+        body,
       },
-      JSON.stringify({
-        accessToken: bundle.cciAccessToken,
-        refreshToken: bundle.refreshToken,
-        exchangeableAccessToken: bundle.exchangeableToken,
-        exchangeableRefreshToken: bundle.exchangeableRefreshToken,
-        nonCcsToken: bundle.nonCcsToken,
-        nonCcsRefreshToken: bundle.nonCcsRefreshToken,
-        idToken: bundle.idToken,
-      })
+      {
+        path: '/domain/api/v2/auth/token-refresh',
+        headers: {
+          ...this.headers(
+            bundle.deviceId,
+            bundle.cciAccessToken,
+            bundle.nonCcsToken,
+            bundle.exchangeableToken
+          ),
+          'Content-Type': 'application/json',
+        },
+        body,
+      }
     );
 
     return this.exchangeCCSToken(applyTokenResponse({ ...bundle }, tokenResponse));
   }
 
   private async exchangeCCSToken(bundle: CCIBundle): Promise<CCIBundle> {
-    const response = await this.post<{ accessToken?: string; expiresTime?: number }>(
-      '/domain/api/v1/auth/token-exchange?serviceType=CCS',
-      this.headers(
-        bundle.deviceId,
-        bundle.cciAccessToken,
-        bundle.nonCcsToken,
-        bundle.exchangeableToken
-      )
+    const response = await this.cciPost<{ accessToken?: string; expiresTime?: number }>(
+      {
+        path: '/auth/v1/token-exchange?serviceType=CCS',
+        headers: {
+          ...this.fpHeaders(bundle.deviceId),
+          ...tokenHeaders(bundle.cciAccessToken, bundle.nonCcsToken, bundle.exchangeableToken),
+        },
+      },
+      {
+        path: '/domain/api/v1/auth/token-exchange?serviceType=CCS',
+        headers: this.headers(
+          bundle.deviceId,
+          bundle.cciAccessToken,
+          bundle.nonCcsToken,
+          bundle.exchangeableToken
+        ),
+      }
     );
     if (!response.accessToken) {
       throw new Error('@EuropeanCCIAuthStrategy: ccs token exchange returned no access token');
@@ -206,20 +230,69 @@ export class EuropeanCCIAuthStrategy {
     };
   }
 
-  private async post<T>(path: string, headers: Record<string, string>, body = ''): Promise<T> {
-    const response = await got.post(this.environment.cci.apiURL + path, {
-      headers,
-      body,
+  // tries the fingerprint-signed route and falls back to the legacy unsigned one
+  // only when the fingerprint gate rejects it, so other errors stay intact
+  private async cciPost<T>(signed: CCIRequest, legacy: CCIRequest): Promise<T> {
+    const response = await this.send(signed);
+    if (response.statusCode === 200) {
+      return JSON.parse(response.body) as T;
+    }
+
+    const code = gateRejectionCode(response.statusCode, response.body);
+    if (code === undefined) {
+      throw this.requestError(signed.path, response);
+    }
+    logger.debug(
+      `@EuropeanCCIAuthStrategy: fingerprint gate rejected ${signed.path.split('?')[0]} (code ${code}), using legacy route`
+    );
+
+    const legacyResponse = await this.send(legacy);
+    if (legacyResponse.statusCode !== 200) {
+      throw this.requestError(legacy.path, legacyResponse);
+    }
+    return JSON.parse(legacyResponse.body) as T;
+  }
+
+  private send(req: CCIRequest) {
+    return got.post(this.environment.cci.apiURL + req.path, {
+      headers: req.headers,
+      body: req.body ?? '',
       throwHttpErrors: false,
     });
-    if (response.statusCode !== 200) {
-      throw new Error(
-        `@EuropeanCCIAuthStrategy: ${path.split('?')[0]} failed: HTTP ${
-          response.statusCode
-        } ${String(response.body).slice(0, 200)}`
-      );
-    }
-    return JSON.parse(response.body) as T;
+  }
+
+  private requestError(path: string, response: { statusCode: number; body: unknown }): Error {
+    return new Error(
+      `@EuropeanCCIAuthStrategy: ${path.split('?')[0]} failed: HTTP ${
+        response.statusCode
+      } ${String(response.body).slice(0, 200)}`
+    );
+  }
+
+  // headers of the fingerprint-gated auth endpoints, signed over the exact request body
+  private fpHeaders(deviceId: string, body = ''): Record<string, string> {
+    const { cci } = this.environment;
+    const headers: Record<string, string> = {
+      'client-id': cci.packageID,
+      'client-name': cci.fingerprintClientName,
+      'client-version': FP_CLIENT_VERSION,
+      'client-os-code': 'android',
+      'client-os-version': FP_OS_VERSION,
+      'client-device-id': deviceId,
+      'client-device-model': FP_DEVICE_MODEL,
+      'client-notification-provider-type': 'FCM',
+      'locale': this.language.toUpperCase(),
+      'timezone': timezoneOffset(),
+      'App-Request-Id': `${randomBytes(12).toString('hex').toUpperCase()}_${deviceId.replace(/-/g, '')}_AOS`,
+      'X-Brand': cci.brandLabel,
+      'X-Region': 'eu',
+      'User-Agent': FP_USER_AGENT,
+      'Accept': '*/*',
+      'Accept-Language': this.language.toLowerCase(),
+      'X-Timestamp': String(Date.now()),
+    };
+    headers['X-Fingerprint'] = fingerprint(headers, cci.fingerprintKey, body);
+    return headers;
   }
 
   // headers required by the CCI API; token parameters are empty before the initial code exchange
@@ -260,6 +333,62 @@ export class EuropeanCCIAuthStrategy {
     return headers;
   }
 }
+
+interface CCIRequest {
+  path: string;
+  headers: Record<string, string>;
+  body?: string;
+}
+
+// adds the CCI token headers, skipping empty tokens
+const tokenHeaders = (
+  cciAccessToken: string,
+  nonCcsToken: string,
+  exchangeableToken: string
+): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  if (nonCcsToken) {
+    headers['Authentication'] = nonCcsToken;
+  }
+  if (cciAccessToken) {
+    headers['authorization'] = `Bearer ${cciAccessToken.trim().replace(/^Bearer\s+/i, '')}`;
+  }
+  if (exchangeableToken) {
+    headers['exchangeable-token'] = exchangeableToken;
+    headers['non-ccs-token'] = nonCcsToken;
+  }
+  return headers;
+};
+
+// fingerprint gate rejections: header missing, bad signature, timestamp out of window
+const FP_GATE_CODES = [9035, 9036, 9037];
+
+const gateRejectionCode = (statusCode: number, body: unknown): number | undefined => {
+  if (statusCode < 400 || statusCode >= 500) {
+    return undefined;
+  }
+  try {
+    const code = JSON.parse(String(body)).code;
+    return FP_GATE_CODES.includes(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// HMAC-SHA256 over client identity, timestamp and body (ASCII whitespace stripped)
+const fingerprint = (headers: Record<string, string>, key: string, body: string): string => {
+  const identity =
+    headers['client-id'] +
+    headers['client-name'] +
+    headers['client-version'] +
+    headers['client-os-code'];
+  const msg =
+    identity +
+    headers['client-os-version'] +
+    headers['X-Timestamp'] +
+    body.replace(/[ \t\n\v\f\r]/g, '');
+  return createHmac('sha256', identity + key).update(msg).digest('hex');
+};
 
 const emptyBundle = (deviceId: string): CCIBundle => ({
   accessToken: '',

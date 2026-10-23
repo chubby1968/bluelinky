@@ -46,6 +46,10 @@ export interface EuropeanCCIConfig {
   clientName: string;
   osVersion: string;
   notificationProvider: string;
+  // X-Fingerprint signing of the CCI auth endpoints (Android OneApp build); the key rotates with app releases
+  fingerprintClientName: string;
+  fingerprintKey: string;
+  brandLabel: string;
 }
 
 export interface EuropeanBrandEnvironment {
@@ -137,6 +141,9 @@ const getHyundaiEnvironment = (): EuropeanBrandEnvironment => {
     clientName:           'hyundai',
     osVersion:            '18.7',
     notificationProvider: 'APNS',
+    fingerprintClientName: 'HyundaiEU',
+    fingerprintKey:       'OsZDfDuCyVX' + 'yfqjCoA2JbX' + '2MrLpGwNBC',
+    brandLabel:           'Hyundai',
   };
 
   return {
@@ -175,6 +182,9 @@ const getKiaEnvironment = (): EuropeanBrandEnvironment => {
     clientName:           'kia',
     osVersion:            '27',
     notificationProvider: 'IOS_APPSTORE',
+    fingerprintClientName: 'KiaEU',
+    fingerprintKey:       'yb4Z1n2nlKe' + 'ukNilE7QEdb' + 'KB34nStPVa',
+    brandLabel:           'Kia',
   };
 
   return {
